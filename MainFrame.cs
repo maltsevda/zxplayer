@@ -10,10 +10,17 @@ namespace zxplayer
 {
     public partial class MainFrame : Form
     {
+        private const int defaultSampleRate = 44100;
+
+        public string root_path = "";
+        public string audacity_path = "";
+        public int sampleRate = defaultSampleRate;
+
         private string tape2wav_path = @"\fuse-utils\tape2wav.exe";
         private string cache_path = @"\cache\";
         private Dictionary<string, string> cache = new Dictionary<string, string>();
         private AudioPlayer player = new AudioPlayer();
+        private string playing_file = "";
 
         public MainFrame()
         {
@@ -37,12 +44,17 @@ namespace zxplayer
             if (!Directory.Exists(cache_path))
                 Directory.CreateDirectory(cache_path);
 
-            rootFolder.Text = Properties.Settings.Default.RootFolder;
+            root_path = Properties.Settings.Default.RootFolder;
+            audacity_path = Properties.Settings.Default.AudacityPath;
+
+            UpdateSettingsIcon();
+            FillTreeSafe();
         }
 
         private void OnClosed(object sender, FormClosedEventArgs e)
         {
-            Properties.Settings.Default.RootFolder = rootFolder.Text;
+            Properties.Settings.Default.RootFolder = root_path;
+            Properties.Settings.Default.AudacityPath = audacity_path;
             Properties.Settings.Default.Save();
 
             // clear cache
@@ -53,75 +65,105 @@ namespace zxplayer
         private void OnIdle(object sender, EventArgs e)
         {
             play.Enabled = filesList.SelectedItems.Count > 0;
-            pause.Enabled = player.Playing && !player.Paused;
+            pause.Enabled = player.Playing;
             stop.Enabled = player.Playing;
+            eject.Enabled = (filesList.SelectedItems.Count > 0) && (audacity_path.Length > 0);
+        }
+
+        private void OnSettings(object sender, EventArgs e)
+        {
+            SettingsFrame dlg = new SettingsFrame();
+            dlg.rootFolder.Text = root_path;
+            dlg.externalPlayer.Text = audacity_path;
+            dlg.sampleRate.Text = sampleRate.ToString();
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+            {
+                root_path = dlg.rootFolder.Text;
+                audacity_path = dlg.externalPlayer.Text;
+                if (!int.TryParse(dlg.sampleRate.Text, out sampleRate))
+                    sampleRate = defaultSampleRate;
+            }
+            UpdateSettingsIcon();
+            FillTreeSafe();
         }
 
         //
         // Player
         //
 
+        private string GetWAV(string in_path)
+        {
+            if (cache.ContainsKey(in_path))
+            {
+                return cache[in_path];
+            }
+            else
+            {
+                string out_name = Path.GetRandomFileName();
+                out_name = Path.ChangeExtension(out_name, "wav");
+                string out_path = cache_path + out_name;
+
+                Process p = new Process();
+                p.StartInfo.UseShellExecute = false;
+                p.StartInfo.CreateNoWindow = true;
+                p.StartInfo.FileName = tape2wav_path;
+                p.StartInfo.Arguments = string.Format("-r {0} \"{1}\" \"{2}\"", sampleRate, in_path, out_path);
+                p.Start();
+
+                if (p.WaitForExit(5000) == true)
+                {
+                    if (p.ExitCode == 0)
+                    {
+                        cache[in_path] = out_path;
+                        return out_path;
+                    }
+                }
+            }
+            return "";
+        }
+
         private void OnPlay(object sender, EventArgs e)
         {
-            if (player.Paused)
-            {
-                player.Resume();
-                return;
-            }
+            player.Stop();
 
             if (filesList.SelectedItems.Count > 0)
             {
                 string in_path = filesList.SelectedItems[0].Tag.ToString();
-                string out_path;
-                bool allow_start = false;
-
-                if (cache.ContainsKey(in_path))
+                string out_path = GetWAV(in_path);
+                if (out_path.Length > 0)
                 {
-                    out_path = cache[in_path];
-                    allow_start = true;
-                }
-                else
-                {
-                    string out_name = Path.GetRandomFileName();
-                    out_name = Path.ChangeExtension(out_name, "wav");
-                    out_path = cache_path + out_name;
-                    int rate = 44100;
-                    if (!int.TryParse(sampleRate.Text, out rate))
-                    {
-                        rate = 44100;
-                        sampleRate.Text = rate.ToString();
-                    }
-
-                    Process p = new Process();
-                    p.StartInfo.UseShellExecute = false;
-                    p.StartInfo.CreateNoWindow = true;
-                    p.StartInfo.FileName = tape2wav_path;
-                    p.StartInfo.Arguments = string.Format("-r {0} \"{1}\" \"{2}\"", rate, in_path, out_path);
-                    p.Start();
-
-                    if (p.WaitForExit(5000) == true)
-                    {
-                        if (p.ExitCode == 0)
-                        {
-                            cache[in_path] = out_path;
-                            allow_start = true;
-                        }
-                    }
-                }
-
-                if (allow_start)
                     player.Play(out_path);
+                    playing_file = Path.GetFileNameWithoutExtension(in_path);
+                }
             }
         }
 
         private void OnPause(object sender, EventArgs e)
         {
-            player.Pause();
+            // check Paused first!
+            if (player.Paused)
+                player.Resume();
+            else if (player.Playing)
+                player.Pause();
         }
 
         private void OnStop(object sender, EventArgs e)
         {
             player.Stop();
+            playing_file = "";
+        }
+
+        private void OnEject(object sender, EventArgs e)
+        {
+            OnStop(sender, e);
+
+            if (audacity_path.Length == 0)
+                return;
+            string in_path = filesList.SelectedItems[0].Tag.ToString();
+            string out_path = GetWAV(in_path);
+            if (out_path.Length == 0)
+                return;
+            Process.Start(audacity_path, out_path);
         }
 
         private void OnTimer(object sender, EventArgs e)
@@ -130,11 +172,15 @@ namespace zxplayer
             {
                 string elapsed = FormatTime(player.Elapsed);
                 string duration = FormatTime(player.Duration);
-                status.Text = $"{elapsed} / {duration}";
+                tape.Text = "Playing: " + playing_file;
+                time.Text = $" {elapsed} / {duration}";
             }
-            else if (!stop.Enabled)
+            else if (stop.Enabled)
+                tape.Text = "Paused: " + playing_file;
+            else
             {
-                status.Text = "Stopped";
+                tape.Text = "Stopped";
+                time.Text = " 0:00 / 0:00";
             }
         }
 
@@ -156,21 +202,15 @@ namespace zxplayer
             filesList.EndUpdate();
         }
 
-        private void OnTextChanged(object sender, EventArgs e)
+        private void FillTreeSafe()
         {
-            if (Directory.Exists(rootFolder.Text))
+            if (Directory.Exists(root_path))
             {
                 foldersTree.BeginUpdate();
                 foldersTree.Nodes.Clear();
-                FillTreeNode(foldersTree.Nodes, rootFolder.Text);
+                FillTreeNode(foldersTree.Nodes, root_path);
                 foldersTree.EndUpdate();
             }
-        }
-
-        private void OnBrowseForFolder(object sender, EventArgs e)
-        {
-            if (foldersDlg.ShowDialog() == DialogResult.OK)
-                rootFolder.Text = foldersDlg.SelectedPath;
         }
 
         //
@@ -237,6 +277,25 @@ namespace zxplayer
             long minutes = seconds / 60;
             seconds -= minutes * 60;
             return $"{minutes}:{seconds:d2}";
+        }
+
+        private void UpdateSettingsIcon()
+        {
+            if (!Directory.Exists(root_path))
+            {
+                status.Image = Properties.Resources.icons8_error_16;
+                status.ToolTipText = "Root Folder not found!";
+            }
+            else if (!File.Exists(audacity_path))
+            {
+                status.Image = Properties.Resources.icons8_warning_16;
+                status.ToolTipText = "External player not found!";
+            }
+            else
+            {
+                status.Image = Properties.Resources.icons8_ok_16;
+                status.ToolTipText = "All fine.";
+            }
         }
     }
 }
