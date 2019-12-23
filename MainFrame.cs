@@ -47,8 +47,10 @@ namespace zxplayer
             root_path = Properties.Settings.Default.RootFolder;
             audacity_path = Properties.Settings.Default.AudacityPath;
 
-            UpdateSettingsIcon();
-            FillTreeSafe();
+            if (UpdateSettingsIcon())
+                OnSettings(this, EventArgs.Empty);
+            else
+                FillTreeSafe();
         }
 
         private void OnClosed(object sender, FormClosedEventArgs e)
@@ -279,12 +281,13 @@ namespace zxplayer
             return $"{minutes}:{seconds:d2}";
         }
 
-        private void UpdateSettingsIcon()
+        private bool UpdateSettingsIcon()
         {
             if (!Directory.Exists(root_path))
             {
                 status.Image = Properties.Resources.icons8_error_16;
                 status.ToolTipText = "Root Folder not found!";
+                return true;
             }
             else if (!File.Exists(audacity_path))
             {
@@ -296,6 +299,7 @@ namespace zxplayer
                 status.Image = Properties.Resources.icons8_ok_16;
                 status.ToolTipText = "All fine.";
             }
+            return false;
         }
     }
 }
